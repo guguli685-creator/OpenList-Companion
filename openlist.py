@@ -196,8 +196,8 @@ class RoundedButton(tk.Canvas):
         if int(self.cget("height")) != height:
             self.configure(height=height)
         self.delete("all")
-        fill = "#DEE2E6" if self.disabled else self.fill
-        text_fill = "#ADB5BD" if self.disabled else self.fg
+        fill = self.fill
+        text_fill = self.fg
         radius = min(self.radius, height // 2)
         self._photo = ImageTk.PhotoImage(rounded_rgba(width, height, radius, fill))
         self.create_image(0, 0, image=self._photo, anchor="nw")
@@ -234,6 +234,103 @@ class RoundedButton(tk.Canvas):
             self.configure(cursor="arrow" if self.disabled else "hand2")
         self._ensure_text_safe_width()
         self._redraw()
+
+
+class RoundedEntry(tk.Canvas):
+    """圆角矩形输入框，替代 Tk 原生 Entry 的直角边框。"""
+
+    def __init__(self, parent, textvariable=None, show="", fill="#F3F5F7",
+                 outline="#E9ECEF", focus_outline=None, fg=None, height=46,
+                 radius=14, font=None, pad_x=14, width=260):
+        self.fill = fill
+        self.outline = outline
+        self.focus_outline = focus_outline or COLORS["blue"]
+        self.fg = fg or COLORS["text"]
+        self.height_value = int(height)
+        self.radius = int(radius)
+        self.font = font or BOLD_FONT
+        self.pad_x = int(pad_x)
+        self._focused = False
+        self._photo = None
+
+        super().__init__(
+            parent,
+            width=int(width),
+            height=self.height_value,
+            bg=parent_bg(parent),
+            highlightthickness=0,
+            bd=0,
+            cursor="xterm",
+        )
+
+        self.entry = tk.Entry(
+            self,
+            textvariable=textvariable,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            bg=self.fill,
+            fg=self.fg,
+            insertbackground=self.fg,
+            font=self.font,
+            show=show or "",
+        )
+        self._window = self.create_window(
+            self.pad_x,
+            self.height_value // 2,
+            anchor="w",
+            window=self.entry,
+        )
+
+        super().bind("<Configure>", self._redraw)
+        super().bind("<Button-1>", self._focus_entry)
+        self.entry.bind("<FocusIn>", self._on_focus_in)
+        self.entry.bind("<FocusOut>", self._on_focus_out)
+        self._redraw()
+
+    def _redraw(self, _event=None):
+        width = max(2, self.winfo_width() or int(self.cget("width")))
+        height = max(2, self.height_value)
+        if int(self.cget("height")) != height:
+            self.configure(height=height)
+        outline = self.focus_outline if self._focused else self.outline
+        self.delete("bg")
+        self._photo = ImageTk.PhotoImage(rounded_rgba(width, height, self.radius, self.fill, outline, border=1))
+        self.create_image(0, 0, image=self._photo, anchor="nw", tags="bg")
+        self.tag_lower("bg")
+        self.coords(self._window, self.pad_x, height // 2)
+        self.itemconfigure(self._window, width=max(10, width - self.pad_x * 2), height=max(20, height - 14))
+
+    def _focus_entry(self, _event=None):
+        self.entry.focus_set()
+
+    def _on_focus_in(self, _event=None):
+        self._focused = True
+        self._redraw()
+
+    def _on_focus_out(self, _event=None):
+        self._focused = False
+        self._redraw()
+
+    def focus_set(self):
+        self.entry.focus_set()
+
+    def get(self):
+        return self.entry.get()
+
+    def insert(self, index, string):
+        return self.entry.insert(index, string)
+
+    def delete(self, first, last=None):
+        if first == "bg":
+            return super().delete(first)
+        return self.entry.delete(first, last)
+
+    def bind(self, sequence=None, func=None, add=None):
+        key_sequences = {"<Return>", "<Escape>", "<Key>", "<KeyRelease>", "<KeyPress>"}
+        if sequence in key_sequences or (isinstance(sequence, str) and sequence.startswith("<Key")):
+            return self.entry.bind(sequence, func, add)
+        return super().bind(sequence, func, add)
 
 
 class RoundedPanel(tk.Canvas):
@@ -636,6 +733,7 @@ class OpenListCompanion(tk.Tk):
             except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
                 continue
         self.log("✨ 端口已释放" if found else f"ℹ️ 端口 {DEFAULT_PORT} 当前未被占用", "green")
+        self.update_all_status()
 
     def is_service_ready(self):
         try:
@@ -645,6 +743,18 @@ class OpenListCompanion(tk.Tk):
         except Exception:
             return False
 
+    def get_service_state(self):
+        if self.is_service_ready():
+            return "running"
+        proc = getattr(self, "proc_handle", None)
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    return "starting"
+            except Exception:
+                pass
+        return "stopped"
+
     def run_cmd(self, action):
         if not self.app_path:
             messagebox.showwarning("提示", "请先选择 alist.exe 路径")
@@ -653,14 +763,16 @@ class OpenListCompanion(tk.Tk):
 
         if action == "stop":
             self.kill_process_tree()
+            self.proc_handle = None
             self.log("🛑 服务已停止", "red")
-            self.update_all_status(False)
+            self.update_all_status(state="stopped")
             self.update_refresh_status_label("等待服务", COLORS["orange"])
             return
 
         if action == "start":
             self.kill_process_tree()
             self.log("🚀 启动服务中...", "green")
+            self.update_all_status(state="starting")
             threading.Thread(target=self._worker, daemon=True).start()
             if self.normal_refresh_enabled:
                 self.start_auto_refresh_task(silent=True, first_delay=3000)
@@ -671,13 +783,15 @@ class OpenListCompanion(tk.Tk):
         if action == "restart":
             self.kill_process_tree()
             self.log("🔄 正在重启服务...", "orange")
+            self.update_all_status(state="starting")
             self.after(800, lambda: self.run_cmd("start"))
             return
 
     def _worker(self):
+        proc = None
         try:
             cmd = [self.app_path, "server", "--force-bin-dir"]
-            self.proc_handle = subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -688,7 +802,9 @@ class OpenListCompanion(tk.Tk):
                 errors="replace",
                 bufsize=1,
             )
-            for line in self.proc_handle.stdout:
+            self.proc_handle = proc
+            self.after(0, lambda: self.update_all_status(state="starting"))
+            for line in proc.stdout:
                 msg = line.strip()
                 if not msg:
                     continue
@@ -696,9 +812,15 @@ class OpenListCompanion(tk.Tk):
                     self.log("🔐 管理凭证已处理", "orange")
                 else:
                     self.log(msg, "green" if "start" in msg.lower() else None)
-            self.proc_handle.wait()
+            proc.wait()
+            if self.proc_handle is proc:
+                self.proc_handle = None
+            self.after(0, self.update_all_status)
         except Exception as e:
+            if proc is not None and self.proc_handle is proc:
+                self.proc_handle = None
             self.log(f"运行出错: {e}", "red")
+            self.after(0, self.update_all_status)
 
     # =========================
     # 数据维护
@@ -924,6 +1046,7 @@ class OpenListCompanion(tk.Tk):
         if generation != self.refresh_task_generation:
             return
         if self.is_service_ready():
+            self.update_all_status(state="running")
             self.run_auto_refresh_once(source=source, force=True, generation=generation)
             return
         if retries <= 0:
@@ -1000,6 +1123,7 @@ class OpenListCompanion(tk.Tk):
         if self.is_service_ready():
             wait_ms = max(0, self.restart_wait) * 1000
             self.log(f"✅ {source}：服务已就绪，等待 {self.restart_wait} 秒后刷新", "green")
+            self.update_all_status(state="running")
             self.update_refresh_status_label("服务已就绪", COLORS["green"])
             self.after(wait_ms, lambda g=generation: self.run_auto_refresh_once(source=f"{source}完成", force=True, generation=g))
             return
@@ -1411,36 +1535,32 @@ class OpenListCompanion(tk.Tk):
         ]
         for row, l1, k1, s1, l2, k2, s2 in field_defs:
             make_label(form, l1).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=(0, 6))
-            e1 = tk.Entry(
+            e1 = RoundedEntry(
                 form,
                 textvariable=vars_map[k1],
-                relief="flat",
-                bg="#F3F5F7",
+                fill="#F3F5F7",
+                outline="#E9ECEF",
                 fg=COLORS["text"],
-                insertbackground=COLORS["text"],
                 font=BOLD_FONT,
                 show=s1 or "",
-                highlightthickness=1,
-                highlightbackground="#F3F5F7",
-                highlightcolor=COLORS["blue"],
+                height=46,
+                radius=14,
             )
-            e1.grid(row=row + 1, column=0, columnspan=2, sticky="ew", padx=(0, 10), ipady=10, pady=(0, 14))
+            e1.grid(row=row + 1, column=0, columnspan=2, sticky="ew", padx=(0, 10), pady=(0, 14))
 
             make_label(form, l2).grid(row=row, column=2, sticky="w", padx=(18, 10), pady=(0, 6))
-            e2 = tk.Entry(
+            e2 = RoundedEntry(
                 form,
                 textvariable=vars_map[k2],
-                relief="flat",
-                bg="#F3F5F7",
+                fill="#F3F5F7",
+                outline="#E9ECEF",
                 fg=COLORS["text"],
-                insertbackground=COLORS["text"],
                 font=BOLD_FONT,
                 show=s2 or "",
-                highlightthickness=1,
-                highlightbackground="#F3F5F7",
-                highlightcolor=COLORS["blue"],
+                height=46,
+                radius=14,
             )
-            e2.grid(row=row + 1, column=2, columnspan=2, sticky="ew", padx=(18, 0), ipady=10, pady=(0, 14))
+            e2.grid(row=row + 1, column=2, columnspan=2, sticky="ew", padx=(18, 0), pady=(0, 14))
 
         def make_preview_url():
             try:
@@ -1857,20 +1977,37 @@ class OpenListCompanion(tk.Tk):
     # =========================
     # UI 状态与交互
     # =========================
-    def update_all_status(self, alive=None):
-        if alive is None:
-            alive = self.is_service_ready()
-        self.status_text.config(
-            text="🟢 正在运行" if alive else "🔴 未运行",
-            fg=COLORS["green"] if alive else COLORS["red"],
-        )
-        self.update_header_badge(alive)
+    def update_all_status(self, alive=None, state=None):
+        if state is None:
+            if alive is True:
+                state = "running"
+            elif alive is False:
+                state = "stopped"
+            else:
+                state = self.get_service_state()
 
-    def update_header_badge(self, alive):
+        if state == "running":
+            text = "🟢 正在运行"
+            color = COLORS["green"]
+        elif state == "starting":
+            text = "🟠 启动中"
+            color = COLORS["orange"]
+        else:
+            text = "🔴 未运行"
+            color = COLORS["red"]
+
+        self.status_text.config(text=text, fg=color)
+        self.update_header_badge(state)
+
+    def update_header_badge(self, state):
         if not hasattr(self, "header_badge"):
             return
-        if alive:
+        if isinstance(state, bool):
+            state = "running" if state else "stopped"
+        if state == "running":
             self.header_badge.set_state(text="• 服务在线", fill="#EBFBEE", fg=COLORS["green"])
+        elif state == "starting":
+            self.header_badge.set_state(text="• 启动中", fill="#FFF4E6", fg=COLORS["orange"])
         else:
             self.header_badge.set_state(text="• 服务离线", fill="#FFF5F5", fg=COLORS["red"])
 
@@ -1964,8 +2101,17 @@ class OpenListCompanion(tk.Tk):
         ]
         for r, (label, key) in enumerate(rows):
             tk.Label(form, text=label, bg=COLORS["white"], fg=COLORS["muted"], font=SMALL_FONT, anchor="w").grid(row=r, column=0, sticky="w", pady=8, padx=(0, 12))
-            entry = tk.Entry(form, textvariable=vars_map[key], relief="flat", bg=COLORS["soft"], fg=COLORS["text"], font=BOLD_FONT)
-            entry.grid(row=r, column=1, sticky="ew", ipady=8, pady=8)
+            entry = RoundedEntry(
+                form,
+                textvariable=vars_map[key],
+                fill=COLORS["soft"],
+                outline="#E9ECEF",
+                fg=COLORS["text"],
+                font=BOLD_FONT,
+                height=42,
+                radius=14,
+            )
+            entry.grid(row=r, column=1, sticky="ew", pady=8)
 
         def save_and_close():
             try:
@@ -1997,7 +2143,6 @@ class OpenListCompanion(tk.Tk):
         self.log("✅ 已复制账户名：admin", "green")
 
     def set_admin_password(self):
-        """【增量更新】使用扁平现代化的长方形圆角面板重写修改密码弹窗，剔除复古界面"""
         if not self.app_path:
             messagebox.showwarning("提示", "请先选择 alist.exe 路径")
             self.change_path()
@@ -2005,31 +2150,19 @@ class OpenListCompanion(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("修改管理密码")
-        win.geometry("420x240")
+        win.geometry("420x220")
         win.resizable(False, False)
-        win.configure(bg=COLORS["bg"])
+        win.configure(bg=COLORS["white"])
         win.transient(self)
-        self.center_child_window(win, 420, 240)
+        self.center_child_window(win, 420, 220)
         try:
             if getattr(self, "_window_icon_photo", None):
                 win.iconphoto(False, self._window_icon_photo)
         except Exception:
             pass
 
-        outer = tk.Frame(win, bg=COLORS["bg"], padx=16, pady=16)
-        outer.pack(fill="both", expand=True)
-
-        card = RoundedPanel(
-            outer,
-            fill=COLORS["white"],
-            outline=COLORS["border"],
-            radius=24,
-            inner_pad=20,
-            height=208,
-            auto_height=False,
-        )
-        card.pack(fill="both", expand=True)
-        body = card.body
+        body = tk.Frame(win, bg=COLORS["white"], padx=28, pady=24)
+        body.pack(fill="both", expand=True)
         body.grid_columnconfigure(0, weight=1)
 
         tk.Label(
@@ -2039,23 +2172,21 @@ class OpenListCompanion(tk.Tk):
             fg=COLORS["text"],
             font=BOLD_FONT,
             anchor="w"
-        ).grid(row=0, column=0, sticky="ew", pady=(4, 10))
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
         pwd_var = tk.StringVar()
-        entry = tk.Entry(
+        entry = RoundedEntry(
             body,
             textvariable=pwd_var,
-            relief="flat",
-            bg="#F3F5F7",
+            fill="#F3F5F7",
+            outline="#E9ECEF",
             fg=COLORS["text"],
-            insertbackground=COLORS["text"],
             font=BOLD_FONT,
             show="*",
-            highlightthickness=1,
-            highlightbackground="#F3F5F7",
-            highlightcolor=COLORS["blue"]
+            height=48,
+            radius=16,
         )
-        entry.grid(row=1, column=0, sticky="ew", ipady=10, pady=(0, 22))
+        entry.grid(row=1, column=0, sticky="ew", pady=(0, 22))
         entry.focus_set()
 
         def do_submit():
@@ -2121,9 +2252,10 @@ class OpenListCompanion(tk.Tk):
     # =========================
     def start_monitor(self):
         def check():
-            alive = self.is_service_ready()
-            self.update_activity_guard()
-            self.update_all_status(alive)
+            state = self.get_service_state()
+            if state == "running":
+                self.update_activity_guard()
+            self.update_all_status(state=state)
             self.after(2000, check)
         check()
 
