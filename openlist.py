@@ -15,7 +15,6 @@ import webbrowser
 import platform
 import threading
 import subprocess
-import shlex
 from io import BytesIO
 from PIL import Image, ImageTk, ImageDraw, ImageOps
 
@@ -31,9 +30,6 @@ os.chdir(BASE_DIR)
 
 CONFIG_FILE = os.path.join(BASE_DIR, ".openlist_path")
 REFRESH_CONFIG_FILE = os.path.join(BASE_DIR, ".openlist_refresh_task.json")
-MCP_CONFIG_FILE = os.path.join(BASE_DIR, ".openlist_mcp_config.json")
-MCP_CLAUDE_CONFIG_FILE = os.path.join(BASE_DIR, "claude_desktop_config.json")
-MCP_SOLO_CONFIG_FILE = os.path.join(BASE_DIR, "solo_mcp_config.json")
 
 APP_TITLE = "OpenList Companion v1.5.7"
 APP_ICON_CANDIDATES = ("openlist.png", "openlist.ico")
@@ -43,7 +39,6 @@ DEFAULT_REFRESH_INTERVAL = 60
 DEFAULT_REFRESH_TIMEOUT = 5
 DEFAULT_RESTART_WAIT = 15
 DEFAULT_IDLE_GUARD = 300
-DEFAULT_MCP_PORT = 8765
 
 MY_QQ_NUMBER = "3478728818"
 AUTHOR_DISPLAY_NAME = "余宣灵."
@@ -114,6 +109,22 @@ def hide_file_attributes(file_path):
         try:
             # 0x02 代表 FILE_ATTRIBUTE_HIDDEN
             ctypes.windll.kernel32.SetFileAttributesW(str(file_path), 0x02)
+        except Exception:
+            pass
+
+
+def prepare_file_for_write(file_path):
+    """写入隐藏配置文件前恢复普通属性，避免 Windows 对隐藏文件 CREATE_ALWAYS 时报 PermissionError。"""
+    if not os.path.exists(file_path):
+        return
+    try:
+        os.chmod(file_path, 0o666)
+    except Exception:
+        pass
+    if SYSTEM == "Windows":
+        try:
+            # 0x80 代表 FILE_ATTRIBUTE_NORMAL
+            ctypes.windll.kernel32.SetFileAttributesW(str(file_path), 0x80)
         except Exception:
             pass
 
@@ -637,9 +648,6 @@ class OpenListCompanion(tk.Tk):
         self.last_refresh_time = "--:--"
         self.last_activity_time = 0
         self.refresh_settings_window = None
-        self.mcp_window = None
-        self.mcp_proc = None
-        self.mcp_config = self.default_mcp_config()
 
         self.refresh_url = f"http://127.0.0.1:{DEFAULT_PORT}"
         self.refresh_interval = DEFAULT_REFRESH_INTERVAL
@@ -650,7 +658,6 @@ class OpenListCompanion(tk.Tk):
         self.restart_refresh_enabled = True
         self.playback_guard_enabled = True
         self.load_refresh_settings()
-        self.load_mcp_settings()
 
         self.init_ui()
         self.load_author_info()
@@ -698,7 +705,6 @@ class OpenListCompanion(tk.Tk):
 
     def on_closing(self):
         self.stop_auto_refresh_task(silent=True)
-        self.stop_mcp_server(silent=True)
         self.kill_process_tree()
         self.destroy()
         sys.exit(0)
@@ -873,6 +879,7 @@ class OpenListCompanion(tk.Tk):
             return
         self.app_path = os.path.normpath(p)
         try:
+            prepare_file_for_write(CONFIG_FILE)
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 f.write(self.app_path)
             hide_file_attributes(CONFIG_FILE)  # 【增量更新】隐藏生成的配置文件
@@ -927,6 +934,7 @@ class OpenListCompanion(tk.Tk):
             "restart_refresh_enabled": self.restart_refresh_enabled,
             "playback_guard_enabled": self.playback_guard_enabled,
         }
+        prepare_file_for_write(REFRESH_CONFIG_FILE)
         with open(REFRESH_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         hide_file_attributes(REFRESH_CONFIG_FILE)  # 【增量更新】隐藏任务配置文件
@@ -1136,270 +1144,8 @@ class OpenListCompanion(tk.Tk):
         self.after(500, lambda g=generation: self._wait_ready_after_restart(source, g, retries - 1))
 
     # =========================
-    # MCP 接入
+    # 弹窗工具
     # =========================
-    def default_mcp_config(self):
-        return {
-            "server_name": "openlist",
-            "openlist_url": f"http://127.0.0.1:{DEFAULT_PORT}",
-            "username": "admin",
-            "password": "",
-            "upload_dir": "/",
-            "host": "0.0.0.0",
-            "port": DEFAULT_MCP_PORT,
-            "endpoint": "/mcp",
-            "command": "npx",
-            "args": "-y openlist-mcp-server",
-        }
-
-    def load_mcp_settings(self):
-        try:
-            if not os.path.exists(MCP_CONFIG_FILE):
-                return
-            with open(MCP_CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            cfg = self.default_mcp_config()
-            cfg.update({k: data.get(k, v) for k, v in cfg.items()})
-            cfg["port"] = max(1, min(65535, int(cfg.get("port", DEFAULT_MCP_PORT))))
-            cfg["endpoint"] = self.normalize_mcp_endpoint(cfg.get("endpoint", "/mcp"))
-            self.mcp_config = cfg
-        except Exception:
-            self.mcp_config = self.default_mcp_config()
-
-    def save_mcp_settings_to_file(self):
-        with open(MCP_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.mcp_config, f, ensure_ascii=False, indent=2)
-        hide_file_attributes(MCP_CONFIG_FILE)  # 【增量更新】隐藏 MCP 核心配置文件
-
-    def normalize_mcp_endpoint(self, value):
-        endpoint = str(value or "/mcp").strip()
-        if not endpoint.startswith("/"):
-            endpoint = "/" + endpoint
-        return endpoint
-
-    def get_lan_ip(self):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                ip = s.getsockname()[0]
-                if ip:
-                    return ip
-        except Exception:
-            pass
-        try:
-            return socket.gethostbyname(socket.gethostname())
-        except Exception:
-            return "127.0.0.1"
-
-    def get_mcp_http_url(self):
-        cfg = self.mcp_config
-        return f"http://{self.get_lan_ip()}:{int(cfg.get('port', DEFAULT_MCP_PORT))}{self.normalize_mcp_endpoint(cfg.get('endpoint', '/mcp'))}"
-
-    def split_mcp_args(self, text):
-        try:
-            return shlex.split(str(text or ""), posix=(SYSTEM != "Windows"))
-        except Exception:
-            return str(text or "").split()
-
-    def build_mcp_command(self):
-        cfg = self.mcp_config
-        command = str(cfg.get("command", "")).strip()
-        if not command:
-            raise ValueError("MCP 命令不能为空")
-        return [command] + self.split_mcp_args(cfg.get("args", ""))
-
-    def build_mcp_env(self):
-        cfg = self.mcp_config
-        env = os.environ.copy()
-        values = {
-            "OPENLIST_BASE_URL": str(cfg.get("openlist_url", "")).strip(),
-            "OPENLIST_URL": str(cfg.get("openlist_url", "")).strip(),
-            "OPENLIST_USERNAME": str(cfg.get("username", "admin")).strip(),
-            "OPENLIST_PASSWORD": str(cfg.get("password", "")),
-            "OPENLIST_UPLOAD_DIR": str(cfg.get("upload_dir", "/")).strip() or "/",
-            "MCP_HOST": str(cfg.get("host", "0.0.0.0")).strip() or "0.0.0.0",
-            "MCP_PORT": str(int(cfg.get("port", DEFAULT_MCP_PORT))),
-            "MCP_ENDPOINT": self.normalize_mcp_endpoint(cfg.get("endpoint", "/mcp")),
-            "MCP_TRANSPORT": "streamable-http",
-        }
-        env.update(values)
-        return env
-
-    def _mcp_process_alive(self):
-        return self.mcp_proc is not None and self.mcp_proc.poll() is None
-
-    def install_mcp_server(self):
-        cfg = self.mcp_config
-        args = self.split_mcp_args(cfg.get("args", ""))
-        package = ""
-        for item in args:
-            if item and not item.startswith("-"):
-                package = item
-                break
-        if not package:
-            messagebox.showwarning("提示", "无法从 MCP 参数里识别包名")
-            return
-        self.log(f"🧩 正在安装/更新 MCP Server：{package}", "orange")
-        threading.Thread(target=self._install_mcp_worker, args=(package,), daemon=True).start()
-
-    def _install_mcp_worker(self, package):
-        try:
-            cmd = ["npm", "install", "-g", package]
-            if SYSTEM == "Windows":
-                cmd = ["cmd", "/c", "npm", "install", "-g", package]
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=BASE_DIR,
-                creationflags=get_creation_flags(),
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-            for line in proc.stdout:
-                msg = line.strip()
-                if msg:
-                    self.log(f"MCP 安装：{msg}", "muted")
-            code = proc.wait()
-            if code == 0:
-                self.log("✅ MCP Server 安装/更新完成", "green")
-            else:
-                self.log(f"❌ MCP Server 安装/更新失败：退出码 {code}", "red")
-        except Exception as e:
-            self.log(f"❌ MCP Server 安装/更新失败：{e}", "red")
-
-    def start_mcp_server(self):
-        if self._mcp_process_alive():
-            self.log("🧩 MCP Server 已在运行", "green")
-            return
-        try:
-            cmd = self.build_mcp_command()
-            env = self.build_mcp_env()
-            self.log(f"🧩 正在启动 MCP Server：{' '.join(cmd)}", "orange")
-            self.log(f"🌐 MCP HTTP 地址：{self.get_mcp_http_url()}", "green")
-            self.mcp_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=BASE_DIR,
-                env=env,
-                creationflags=get_creation_flags(),
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-            )
-            threading.Thread(target=self._read_mcp_output_worker, daemon=True).start()
-        except Exception as e:
-            self.mcp_proc = None
-            self.log(f"❌ MCP Server 启动失败：{e}", "red")
-
-    def _read_mcp_output_worker(self):
-        proc = self.mcp_proc
-        if not proc:
-            return
-        try:
-            for line in proc.stdout:
-                msg = line.strip()
-                if msg:
-                    self.log(f"MCP：{msg}", "green" if "listen" in msg.lower() or "ready" in msg.lower() else "muted")
-            code = proc.wait()
-            if self.mcp_proc is proc:
-                self.mcp_proc = None
-            if code == 0:
-                self.log("🧩 MCP Server 已结束", "orange")
-            else:
-                self.log(f"❌ MCP Server 已退出：退出码 {code}", "red")
-        except Exception as e:
-            self.log(f"❌ MCP 日志读取失败：{e}", "red")
-
-    def stop_mcp_server(self, silent=False):
-        proc = self.mcp_proc
-        self.mcp_proc = None
-        if not proc or proc.poll() is not None:
-            if not silent:
-                self.log("🧩 MCP Server 当前未运行", "orange")
-            return
-        try:
-            parent = psutil.Process(proc.pid)
-            for child in parent.children(recursive=True):
-                try:
-                    child.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            parent.kill()
-            if not silent:
-                self.log("🛑 MCP Server 已停止", "orange")
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            if not silent:
-                self.log("🛑 MCP Server 已停止", "orange")
-
-    def generate_claude_config(self):
-        try:
-            cfg = self.mcp_config
-            data = {
-                "mcpServers": {
-                    str(cfg.get("server_name", "openlist")).strip() or "openlist": {
-                        "command": str(cfg.get("command", "npx")).strip(),
-                        "args": self.split_mcp_args(cfg.get("args", "")),
-                        "env": {
-                            "OPENLIST_BASE_URL": str(cfg.get("openlist_url", "")).strip(),
-                            "OPENLIST_USERNAME": str(cfg.get("username", "admin")).strip(),
-                            "OPENLIST_PASSWORD": str(cfg.get("password", "")),
-                            "OPENLIST_UPLOAD_DIR": str(cfg.get("upload_dir", "/")).strip() or "/",
-                        },
-                    }
-                }
-            }
-            with open(MCP_CLAUDE_CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            hide_file_attributes(MCP_CLAUDE_CONFIG_FILE)  # 【增量更新】隐藏生成的 Claude 配置文件
-            self.log(f"✅ Claude 配置已生成：{MCP_CLAUDE_CONFIG_FILE}", "green")
-        except Exception as e:
-            self.log(f"❌ Claude 配置生成失败：{e}", "red")
-
-    def generate_solo_config(self):
-        try:
-            cfg = self.mcp_config
-            http_url = self.get_mcp_http_url()
-            data = {
-                "name": str(cfg.get("server_name", "openlist")).strip() or "openlist",
-                "type": "streamable-http",
-                "url": http_url,
-                "transport": "streamable-http",
-                "headers": {},
-                "note": "把 url 填入支持 Streamable HTTP / SSE 的 MCP 客户端。",
-                "stdio": {
-                    "command": str(cfg.get("command", "npx")).strip(),
-                    "args": self.split_mcp_args(cfg.get("args", "")),
-                    "env": {
-                        "OPENLIST_BASE_URL": str(cfg.get("openlist_url", "")).strip(),
-                        "OPENLIST_USERNAME": str(cfg.get("username", "admin")).strip(),
-                        "OPENLIST_PASSWORD": str(cfg.get("password", "")),
-                        "OPENLIST_UPLOAD_DIR": str(cfg.get("upload_dir", "/")).strip() or "/",
-                    },
-                },
-            }
-            with open(MCP_SOLO_CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            hide_file_attributes(MCP_SOLO_CONFIG_FILE)  # 【增量更新】隐藏生成的 SOLO 配置文件
-            self.log(f"✅ SOLO / HTTP MCP 配置已生成：{MCP_SOLO_CONFIG_FILE}", "green")
-        except Exception as e:
-            self.log(f"❌ SOLO 配置生成失败：{e}", "red")
-
-    def copy_mcp_http_url(self):
-        url = self.get_mcp_http_url()
-        self.clipboard_clear()
-        self.clipboard_append(url)
-        self.update()
-        self.log(f"✅ 已复制 MCP 地址：{url}", "green")
-
     def center_child_window(self, win, width, height):
         self.update_idletasks()
         sw = self.winfo_width()
@@ -1409,304 +1155,6 @@ class OpenListCompanion(tk.Tk):
         x = sx + max(0, (sw - width) // 2)
         y = sy + max(0, (sh - height) // 2)
         win.geometry(f"{width}x{height}+{x}+{y}")
-
-    def open_mcp_settings(self):
-        if self.mcp_window and self.mcp_window.winfo_exists():
-            self.mcp_window.lift()
-            return
-
-        win = tk.Toplevel(self)
-        self.mcp_window = win
-        win.title("MCP 设置")
-        win.resizable(False, False)
-        win.configure(bg=COLORS["bg"])
-        win.transient(self)
-        self.center_child_window(win, 860, 640)
-        try:
-            if getattr(self, "_window_icon_photo", None):
-                win.iconphoto(False, self._window_icon_photo)
-        except Exception:
-            pass
-
-        def on_close():
-            self.mcp_window = None
-            win.destroy()
-
-        win.protocol("WM_DELETE_WINDOW", on_close)
-
-        outer = tk.Frame(win, bg=COLORS["bg"], padx=20, pady=20)
-        outer.pack(fill="both", expand=True)
-
-        card = RoundedPanel(
-            outer,
-            fill=COLORS["white"],
-            outline=COLORS["border"],
-            radius=30,
-            inner_pad=24,
-            height=590,
-            auto_height=False,
-        )
-        card.pack(fill="both", expand=True)
-        body = card.body
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_rowconfigure(1, weight=1)
-
-        header = tk.Frame(body, bg=COLORS["white"])
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
-        header.grid_columnconfigure(0, weight=1)
-
-        tk.Label(
-            header,
-            text="MCP 接入配置",
-            bg=COLORS["white"],
-            fg=COLORS["text"],
-            font=BIG_FONT,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew")
-        tk.Label(
-            header,
-            text="配置 OpenList 地址、MCP Server 命令、客户端连接信息",
-            bg=COLORS["white"],
-            fg=COLORS["muted"],
-            font=SMALL_FONT,
-            anchor="w",
-        ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
-
-        mcp_state_var = tk.StringVar(value="运行中" if self._mcp_process_alive() else "未运行")
-        state_badge = RoundedButton(
-            header,
-            "• MCP " + mcp_state_var.get(),
-            fill="#EBFBEE" if self._mcp_process_alive() else "#F1F3F5",
-            fg=COLORS["green"] if self._mcp_process_alive() else COLORS["muted"],
-            height=36,
-            radius=14,
-            font=BOLD_FONT,
-            min_width=116,
-            disabled=True,
-        )
-        state_badge.grid(row=0, column=1, rowspan=2, sticky="e", padx=(20, 0))
-
-        scroll = ModernScrollFrame(body, bg=COLORS["white"], scrollbar_width=22)
-        scroll.grid(row=1, column=0, sticky="nsew")
-        form = scroll.body
-        form.grid_columnconfigure(1, weight=1)
-        form.grid_columnconfigure(3, weight=1)
-
-        cfg = self.mcp_config.copy()
-        vars_map = {
-            "server_name": tk.StringVar(value=str(cfg.get("server_name", "openlist"))),
-            "openlist_url": tk.StringVar(value=str(cfg.get("openlist_url", self.refresh_url))),
-            "username": tk.StringVar(value=str(cfg.get("username", "admin"))),
-            "password": tk.StringVar(value=str(cfg.get("password", ""))),
-            "upload_dir": tk.StringVar(value=str(cfg.get("upload_dir", "/"))),
-            "host": tk.StringVar(value=str(cfg.get("host", "0.0.0.0"))),
-            "port": tk.StringVar(value=str(cfg.get("port", DEFAULT_MCP_PORT))),
-            "endpoint": tk.StringVar(value=str(cfg.get("endpoint", "/mcp"))),
-            "command": tk.StringVar(value=str(cfg.get("command", "npx"))),
-            "args": tk.StringVar(value=str(cfg.get("args", "-y openlist-mcp-server"))),
-        }
-
-        def make_label(parent, text):
-            return tk.Label(
-                parent,
-                text=text,
-                bg=COLORS["white"],
-                fg=COLORS["muted"],
-                font=SMALL_FONT,
-                anchor="w",
-            )
-
-        form_section = tk.Label(
-            form,
-            text="基础配置",
-            bg=COLORS["white"],
-            fg=COLORS["text"],
-            font=TITLE_FONT,
-            anchor="w",
-        )
-        form_section.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 14))
-
-        field_defs = [
-            (1, "服务名称", "server_name", None, "OpenList 地址", "openlist_url", None),
-            (3, "账户", "username", None, "密码", "password", "*"),
-            (5, "上传目录", "upload_dir", None, "监听主机", "host", None),
-            (7, "监听端口", "port", None, "HTTP 路径", "endpoint", None),
-            (9, "MCP 命令", "command", None, "MCP 参数", "args", None),
-        ]
-        for row, l1, k1, s1, l2, k2, s2 in field_defs:
-            make_label(form, l1).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=(0, 6))
-            e1 = RoundedEntry(
-                form,
-                textvariable=vars_map[k1],
-                fill="#F3F5F7",
-                outline="#E9ECEF",
-                fg=COLORS["text"],
-                font=BOLD_FONT,
-                show=s1 or "",
-                height=46,
-                radius=14,
-            )
-            e1.grid(row=row + 1, column=0, columnspan=2, sticky="ew", padx=(0, 10), pady=(0, 14))
-
-            make_label(form, l2).grid(row=row, column=2, sticky="w", padx=(18, 10), pady=(0, 6))
-            e2 = RoundedEntry(
-                form,
-                textvariable=vars_map[k2],
-                fill="#F3F5F7",
-                outline="#E9ECEF",
-                fg=COLORS["text"],
-                font=BOLD_FONT,
-                show=s2 or "",
-                height=46,
-                radius=14,
-            )
-            e2.grid(row=row + 1, column=2, columnspan=2, sticky="ew", padx=(18, 0), pady=(0, 14))
-
-        def make_preview_url():
-            try:
-                port = int(str(vars_map["port"].get()).strip() or DEFAULT_MCP_PORT)
-            except Exception:
-                port = DEFAULT_MCP_PORT
-            endpoint = self.normalize_mcp_endpoint(vars_map["endpoint"].get())
-            return f"http://{self.get_lan_ip()}:{port}{endpoint}"
-
-        mcp_url_var = tk.StringVar(value=make_preview_url())
-
-        def refresh_preview(*_):
-            mcp_url_var.set(make_preview_url())
-
-        for key in ("port", "endpoint"):
-            try:
-                vars_map[key].trace_add("write", refresh_preview)
-            except Exception:
-                pass
-
-        make_label(form, "连接地址").grid(row=11, column=0, sticky="w", padx=(0, 10), pady=(2, 6))
-        url_box = tk.Frame(form, bg="#EBFBEE", highlightthickness=1, highlightbackground="#D3F9D8")
-        url_box.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(0, 18))
-        tk.Label(
-            url_box,
-            textvariable=mcp_url_var,
-            bg="#EBFBEE",
-            fg=COLORS["green"],
-            font=BOLD_FONT,
-            anchor="w",
-            padx=14,
-            pady=12,
-        ).pack(fill="x")
-
-        action_title = tk.Label(
-            form,
-            text="操作",
-            bg=COLORS["white"],
-            fg=COLORS["text"],
-            font=TITLE_FONT,
-            anchor="w",
-        )
-        action_title.grid(row=13, column=0, columnspan=4, sticky="ew", pady=(0, 12))
-
-        def update_mcp_badge():
-            alive = self._mcp_process_alive()
-            mcp_state_var.set("运行中" if alive else "未运行")
-            state_badge.set_state(
-                text="• MCP " + mcp_state_var.get(),
-                fill="#EBFBEE" if alive else "#F1F3F5",
-                fg=COLORS["green"] if alive else COLORS["muted"],
-            )
-
-        def save_from_form(close=False):
-            try:
-                port = int(vars_map["port"].get().strip())
-                if not 1 <= port <= 65535:
-                    raise ValueError("端口必须在 1 到 65535 之间")
-                endpoint = self.normalize_mcp_endpoint(vars_map["endpoint"].get())
-                self.mcp_config = {
-                    "server_name": vars_map["server_name"].get().strip() or "openlist",
-                    "openlist_url": vars_map["openlist_url"].get().strip() or f"http://127.0.0.1:{DEFAULT_PORT}",
-                    "username": vars_map["username"].get().strip() or "admin",
-                    "password": vars_map["password"].get(),
-                    "upload_dir": vars_map["upload_dir"].get().strip() or "/",
-                    "host": vars_map["host"].get().strip() or "0.0.0.0",
-                    "port": port,
-                    "endpoint": endpoint,
-                    "command": vars_map["command"].get().strip() or "npx",
-                    "args": vars_map["args"].get().strip(),
-                }
-                self.save_mcp_settings_to_file()
-                mcp_url_var.set(self.get_mcp_http_url())
-                self.log("✅ MCP 配置已保存", "green")
-                if close:
-                    on_close()
-                return True
-            except Exception as e:
-                messagebox.showerror("错误", f"MCP 配置保存失败：{e}")
-                return False
-
-        def action_install():
-            if save_from_form(False):
-                self.install_mcp_server()
-                update_mcp_badge()
-
-        def action_start():
-            if save_from_form(False):
-                self.start_mcp_server()
-                update_mcp_badge()
-
-        def action_stop():
-            self.stop_mcp_server()
-            update_mcp_badge()
-
-        def action_claude():
-            if save_from_form(False):
-                self.generate_claude_config()
-
-        def action_solo():
-            if save_from_form(False):
-                self.generate_solo_config()
-
-        def action_copy_url():
-            if save_from_form(False):
-                self.copy_mcp_http_url()
-
-        action_row_1 = tk.Frame(form, bg=COLORS["white"])
-        action_row_1.grid(row=14, column=0, columnspan=4, sticky="ew", pady=(0, 10))
-        for i in range(3):
-            action_row_1.grid_columnconfigure(i, weight=1, uniform="mcp_action_top")
-
-        RoundedButton(action_row_1, "安装/更新 MCP", action_install, fill=COLORS["soft"], hover_fill="#E9ECEF", fg=COLORS["text"], height=40, radius=15).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        RoundedButton(action_row_1, "启动 MCP", action_start, fill=COLORS["green"], hover_fill="#37B24D", fg="white", height=40, radius=15).grid(row=0, column=1, sticky="ew", padx=6)
-        RoundedButton(action_row_1, "停止 MCP", action_stop, fill=COLORS["red"], hover_fill="#E03131", fg="white", height=40, radius=15).grid(row=0, column=2, sticky="ew", padx=(6, 0))
-
-        action_row_2 = tk.Frame(form, bg=COLORS["white"])
-        action_row_2.grid(row=15, column=0, columnspan=4, sticky="ew", pady=(0, 18))
-        for i in range(3):
-            action_row_2.grid_columnconfigure(i, weight=1, uniform="mcp_action_bottom")
-
-        RoundedButton(action_row_2, "生成 Claude", action_claude, fill=COLORS["blue"], hover_fill=COLORS["blue_hover"], fg="white", height=40, radius=15).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        RoundedButton(action_row_2, "生成 SOLO", action_solo, fill=COLORS["purple"], hover_fill=COLORS["purple_hover"], fg="white", height=40, radius=15).grid(row=0, column=1, sticky="ew", padx=6)
-        RoundedButton(action_row_2, "复制 HTTP 地址", action_copy_url, fill=COLORS["soft"], hover_fill="#E9ECEF", fg=COLORS["text"], height=40, radius=15).grid(row=0, column=2, sticky="ew", padx=(6, 0))
-
-        bottom = tk.Frame(body, bg=COLORS["white"])
-        bottom.grid(row=2, column=0, sticky="ew", pady=(18, 0))
-        bottom.grid_columnconfigure(0, weight=1)
-        RoundedButton(
-            bottom,
-            "配置完成，返回主页面",
-            lambda: save_from_form(True),
-            fill=COLORS["orange"],
-            hover_fill="#F76707",
-            fg="white",
-            height=44,
-            radius=17,
-        ).grid(row=0, column=0, sticky="ew")
-
-        scroll.bind_mousewheel_tree()
-        scroll.after_idle(lambda: scroll.canvas.configure(scrollregion=scroll.canvas.bbox("all")))
-
-        try:
-            win.grab_set()
-        except Exception:
-            pass
 
     # =========================
     # UI 构建
@@ -1814,20 +1262,17 @@ class OpenListCompanion(tk.Tk):
         nav.grid(row=5, column=0, sticky="ew", padx=16, pady=(4, 0))
         nav.grid_columnconfigure(0, weight=1)
 
-        mcp_btn = RoundedButton(
+        doc_btn = RoundedButton(
             nav,
-            "🧩  MCP 设置",
-            self.open_mcp_settings,
-            fill=COLORS["blue"],
-            hover_fill=COLORS["blue_hover"],
+            "📚  官方文档",
+            lambda: webbrowser.open(OFFICIAL_DOC_URL),
+            fill=COLORS["purple"],
+            hover_fill=COLORS["purple_hover"],
             fg="white",
             height=42,
             radius=15,
         )
-        mcp_btn.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-
-        doc_btn = RoundedButton(nav, "📚  官方文档", lambda: webbrowser.open(OFFICIAL_DOC_URL), fill=COLORS["purple"], hover_fill=COLORS["purple_hover"], fg="white", height=42, radius=15)
-        doc_btn.grid(row=1, column=0, sticky="ew")
+        doc_btn.grid(row=0, column=0, sticky="ew")
 
     def make_card(self, parent, fill=COLORS["white"], height=120, radius=20, inset=16):
         return RoundedPanel(parent, fill=fill, outline=COLORS["border"], radius=radius, inner_pad=inset, height=height)
