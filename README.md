@@ -5,7 +5,6 @@
 ### 🚀 核心功能特色
 * **服务一键控制中心**：支持一键启动、停止、重启 Alist 服务，运行日志实时滚动投递。内置智能端口扫描，遭遇 5244 端口占用时可一键释放。
 * **智能自动任务与观影保护**：定时自动刷新或重启服务。重启时若检测到用户正在传输文件或播放流媒体（网盘视频），将自动激活保护模式顺延任务，绝不打断观影体验。
-* **全面接入 AI 生态 (MCP Server)**：完美接入 Model Context Protocol (MCP) 协议，一键生成 Claude Desktop 配置文件或标准 SOLO/HTTP MCP 配置文件。
 * **纯净便携、目录零污染**：程序运行时生成的本地凭证、刷新任务及 MCP 配置文件，在 Windows 系统下会自动转换为系统隐藏属性，还你清爽干净的目录。
 
 ### 📦 开发与运行环境
@@ -49,9 +48,6 @@
   本项目内置/托管的 `alist` 核心服务程序，源自官方开源项目 **[@OpenListTeam/OpenList](https://github.com/OpenListTeam/OpenList)**。
   > 💡 *用户在使用本便捷版时，需将该项目编译/提供的服务核心可执行文件（如 `OpenList.exe`）导入并放置于程序同级目录下。*
 
-* **AI 智能体接入 (MCP 引用来源)**：
-  本项目内置的 AI 知识库接入功能，深度引用并集成了 **[@hbestm/openlist-mcp-server](https://github.com/hbestm/openlist-mcp-server)**。
-  > 💡 *本软件通过 GUI 的“安装/更新 MCP”功能及默认参数（`-y openlist-mcp-server`），直接调用并部署该项目的 MCP 服务端实现。*
 
 感谢上述团队与作者为开源社区做出的杰出贡献！
 
