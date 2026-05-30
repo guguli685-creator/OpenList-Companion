@@ -12,3 +12,5 @@
 * **开发作者**：余宣灵.
 * **官方文档**：https://doc.openlist.team
 * **核心依赖**：Python 3.12+ / Tkinter / Pillow / Psutil / Requests
+## 👥 鸣谢与致敬 (Acknowledgments)
+
