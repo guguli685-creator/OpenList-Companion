@@ -13,20 +13,6 @@
 * **官方文档**：
 * **核心依赖**：Python 3.12+ / Tkinter / Pillow / Psutil / Requests
 
-## 🔌 项目依赖与技术鸣谢 (Dependencies & Acknowledgments)
-
-本项目的高效运行与生态接入，深度依赖于以下优秀的开源项目：
-
-* **核心服务程序 (.exe 导入来源)**：
-  本项目内置/托管的 `alist` 核心服务程序，源自官方开源项目 **[@OpenListTeam/OpenList](https://github.com/OpenListTeam/OpenList)**。
-  > 💡 *用户在使用本便捷版时，需将该项目编译/提供的服务核心可执行文件（如 `OpenList.exe`）导入并放置于程序同级目录下。*
-
-* **AI 智能体接入 (MCP 引用来源)**：
-  本项目内置的 AI 知识库接入功能，深度引用并集成了 **[@hbestm/openlist-mcp-server](https://github.com/hbestm/openlist-mcp-server)**。
-  > 💡 *本软件通过 GUI 的“安装/更新 MCP”功能及默认参数（`-y openlist-mcp-server`），直接调用并部署该项目的 MCP 服务端实现。*
-
-感谢上述团队与作者为开源社区做出的杰出贡献！
-
 ## 📖 使用教程 (Usage Tutorial)
 
 ### 1. 📂 准备工作 (环境部署)
@@ -54,3 +40,18 @@
 4. **客户端对接**：
    * 如果使用 **Claude Desktop**，点击 **【生成 Claude】** 即可一键完成环境写入。
    * 如果使用其他第三方 AI 客户端（如 Cline / Cursor），点击 **【生成 SOLO】** 即可导出独立配置，或直接点击 **【复制 HTTP 地址】** 进行流式 SSE 对接。
+
+   ## 🔌 项目依赖与技术鸣谢 (Dependencies & Acknowledgments)
+
+本项目的高效运行与生态接入，深度依赖于以下优秀的开源项目：
+
+* **核心服务程序 (.exe 导入来源)**：
+  本项目内置/托管的 `alist` 核心服务程序，源自官方开源项目 **[@OpenListTeam/OpenList](https://github.com/OpenListTeam/OpenList)**。
+  > 💡 *用户在使用本便捷版时，需将该项目编译/提供的服务核心可执行文件（如 `OpenList.exe`）导入并放置于程序同级目录下。*
+
+* **AI 智能体接入 (MCP 引用来源)**：
+  本项目内置的 AI 知识库接入功能，深度引用并集成了 **[@hbestm/openlist-mcp-server](https://github.com/hbestm/openlist-mcp-server)**。
+  > 💡 *本软件通过 GUI 的“安装/更新 MCP”功能及默认参数（`-y openlist-mcp-server`），直接调用并部署该项目的 MCP 服务端实现。*
+
+感谢上述团队与作者为开源社区做出的杰出贡献！
+
