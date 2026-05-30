@@ -10,7 +10,7 @@
 
 ### 📦 开发与运行环境
 * **开发作者**：余宣灵.
-* **官方文档**：https://doc.openlist.team
+* **官方文档**：
 * **核心依赖**：Python 3.12+ / Tkinter / Pillow / Psutil / Requests
 
 ## 🔌 项目依赖与技术鸣谢 (Dependencies & Acknowledgments)
