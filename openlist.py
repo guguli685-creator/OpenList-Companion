@@ -1997,19 +1997,113 @@ class OpenListCompanion(tk.Tk):
         self.log("✅ 已复制账户名：admin", "green")
 
     def set_admin_password(self):
+        """【增量更新】使用扁平现代化的长方形圆角面板重写修改密码弹窗，剔除复古界面"""
         if not self.app_path:
             messagebox.showwarning("提示", "请先选择 alist.exe 路径")
             self.change_path()
             return
-        pwd = simpledialog.askstring("修改管理密码", "请输入新密码：", show="*")
-        if not pwd:
-            return
+
+        win = tk.Toplevel(self)
+        win.title("修改管理密码")
+        win.geometry("420x240")
+        win.resizable(False, False)
+        win.configure(bg=COLORS["bg"])
+        win.transient(self)
+        self.center_child_window(win, 420, 240)
         try:
-            subprocess.Popen([self.app_path, "admin", "set", pwd], creationflags=get_creation_flags()).wait()
-            self.log("✅ 管理密码已修改", "green")
-            self.run_cmd("restart")
-        except Exception as e:
-            self.log(f"❌ 修改密码失败：{e}", "red")
+            if getattr(self, "_window_icon_photo", None):
+                win.iconphoto(False, self._window_icon_photo)
+        except Exception:
+            pass
+
+        outer = tk.Frame(win, bg=COLORS["bg"], padx=16, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        card = RoundedPanel(
+            outer,
+            fill=COLORS["white"],
+            outline=COLORS["border"],
+            radius=24,
+            inner_pad=20,
+            height=208,
+            auto_height=False,
+        )
+        card.pack(fill="both", expand=True)
+        body = card.body
+        body.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            body,
+            text="请输入新密码：",
+            bg=COLORS["white"],
+            fg=COLORS["text"],
+            font=BOLD_FONT,
+            anchor="w"
+        ).grid(row=0, column=0, sticky="ew", pady=(4, 10))
+
+        pwd_var = tk.StringVar()
+        entry = tk.Entry(
+            body,
+            textvariable=pwd_var,
+            relief="flat",
+            bg="#F3F5F7",
+            fg=COLORS["text"],
+            insertbackground=COLORS["text"],
+            font=BOLD_FONT,
+            show="*",
+            highlightthickness=1,
+            highlightbackground="#F3F5F7",
+            highlightcolor=COLORS["blue"]
+        )
+        entry.grid(row=1, column=0, sticky="ew", ipady=10, pady=(0, 22))
+        entry.focus_set()
+
+        def do_submit():
+            pwd = pwd_var.get()
+            if not pwd:
+                messagebox.showwarning("提示", "密码不能为空", parent=win)
+                return
+            win.destroy()
+            try:
+                subprocess.Popen([self.app_path, "admin", "set", pwd], creationflags=get_creation_flags()).wait()
+                self.log("✅ 管理密码已修改", "green")
+                self.run_cmd("restart")
+            except Exception as e:
+                self.log(f"❌ 修改密码失败：{e}", "red")
+
+        btn_row = tk.Frame(body, bg=COLORS["white"])
+        btn_row.grid(row=2, column=0, sticky="ew")
+        btn_row.grid_columnconfigure(0, weight=1)
+        btn_row.grid_columnconfigure(1, weight=1)
+
+        RoundedButton(
+            btn_row,
+            "取消",
+            win.destroy,
+            fill=COLORS["soft"],
+            hover_fill="#E9ECEF",
+            fg=COLORS["text"],
+            height=38,
+            radius=14
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        RoundedButton(
+            btn_row,
+            "确认修改",
+            do_submit,
+            fill=COLORS["blue"],
+            hover_fill=COLORS["blue_hover"],
+            fg="white",
+            height=38,
+            radius=14
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        entry.bind("<Return>", lambda e: do_submit())
+
+        try:
+            win.grab_set()
+        except Exception:
+            pass
 
     def load_author_info(self):
         def download():
